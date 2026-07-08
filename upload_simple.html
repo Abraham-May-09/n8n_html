@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Procesar Estados de Cuenta</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: linear-gradient(135deg, #0a0d12 0%, #131820 100%);
+    color: #e6e8eb;
+    padding: 40px 20px;
+    min-height: 100vh;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+  }
+  .container { max-width: 640px; width: 100%; }
+
+  h1 {
+    font-size: 26px;
+    margin-bottom: 6px;
+    background: linear-gradient(135deg, #6fb0ff, #4a90e2);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .subtitle { color: #8b93a1; margin-bottom: 28px; font-size: 14px; }
+
+  .card {
+    background: #1a1d24;
+    border: 1px solid #2a2f3a;
+    border-radius: 16px;
+    padding: 28px;
+    margin-bottom: 16px;
+  }
+
+  .dropzone {
+    border: 2px dashed #2a2f3a;
+    background: #14171d;
+    border-radius: 14px;
+    padding: 56px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .dropzone:hover { border-color: #4a90e2; background: #161a22; }
+  .dropzone.dragging { border-color: #4a90e2; background: #1a2030; transform: scale(1.01); }
+  .dropzone .icon { font-size: 56px; margin-bottom: 12px; opacity: 0.7; }
+  .dropzone .title { font-size: 17px; margin-bottom: 6px; }
+  .dropzone .hint { font-size: 13px; color: #8b93a1; }
+  .dropzone input[type=file] { display: none; }
+
+  .queue { margin-top: 14px; }
+  .queue:empty { display: none; }
+  .queue-item {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 14px;
+    background: #0f1115;
+    border-radius: 10px;
+    margin-bottom: 6px;
+    font-size: 13px;
+    transition: background 0.3s;
+  }
+  .qi-icon { font-size: 16px; }
+  .qi-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qi-size { color: #8b93a1; font-family: 'SF Mono', monospace; font-size: 11px; }
+  .qi-remove {
+    background: transparent;
+    border: none;
+    color: #5a606e;
+    cursor: pointer;
+    font-size: 18px;
+    padding: 0 6px;
+    line-height: 1;
+  }
+  .qi-remove:hover { color: #ee6e76; }
+  .queue-item.processing { background: #1a2030; }
+  .queue-item.success { background: #14241a; }
+  .queue-item.error { background: #2a1418; }
+
+  .actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 22px;
+  }
+  button {
+    padding: 14px 32px;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: all 0.15s;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #4a90e2, #5a9fee);
+    color: white;
+    min-width: 220px;
+  }
+  .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(74,144,226,0.45); }
+  .btn-primary:disabled { background: #2a2f3a; color: #5a606e; cursor: not-allowed; }
+  .btn-secondary {
+    background: #2a2f3a;
+    color: #e6e8eb;
+  }
+  .btn-secondary:hover:not(:disabled) { background: #353b48; }
+
+  .progress {
+    height: 6px;
+    background: #2a2f3a;
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 18px 0;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #4a90e2, #6fb0ff);
+    width: 0%;
+    transition: width 0.4s;
+  }
+
+  .status-text {
+    text-align: center;
+    color: #8b93a1;
+    font-size: 13px;
+    margin-top: 8px;
+  }
+
+  .summary {
+    background: linear-gradient(135deg, #14241a, #1a3a26);
+    border: 1px solid #2d5a3a;
+    border-radius: 14px;
+    padding: 24px;
+    text-align: center;
+    display: none;
+  }
+  .summary.show { display: block; }
+  .summary.has-errors {
+    background: linear-gradient(135deg, #2a1418, #3a1c20);
+    border-color: #5c2d35;
+  }
+  .summary .title { font-size: 18px; margin-bottom: 12px; }
+  .summary .detail { color: #8b93a1; font-size: 14px; margin-bottom: 16px; }
+  .summary .download-link {
+    display: inline-block;
+    background: #4a90e2;
+    color: white;
+    text-decoration: none;
+    padding: 12px 28px;
+    border-radius: 10px;
+    margin-top: 8px;
+    font-weight: 500;
+  }
+  .summary .download-link:hover { background: #5a9fee; }
+
+  .config {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid #2a2f3a;
+    text-align: center;
+  }
+  .config details { font-size: 12px; color: #8b93a1; }
+  .config details summary { cursor: pointer; padding: 6px 0; }
+  .config-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 10px;
+    text-align: left;
+  }
+  .config-grid label { display: block; font-size: 11px; color: #8b93a1; margin-bottom: 4px; }
+  .config-grid input {
+    width: 100%;
+    background: #0f1115;
+    border: 1px solid #2a2f3a;
+    color: #e6e8eb;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-family: 'SF Mono', monospace;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1>Procesar Estados de Cuenta</h1>
+    <div class="subtitle">Arrastra los PDFs del cliente. El sistema extrae los datos, crea la carpeta en Drive, y te devuelve el expediente Excel listo para descargar.</div>
+
+    <div class="card">
+      <label class="dropzone" id="dropzone" for="fileInput">
+        <div class="icon">📥</div>
+        <div class="title" id="dzTitle">Arrastra PDFs aquí o haz clic</div>
+        <div class="hint" id="dzHint">Solo archivos .pdf • Hasta 10 a la vez</div>
+        <input id="fileInput" type="file" accept="application/pdf" multiple>
+      </label>
+
+      <div class="queue" id="queue"></div>
+
+      <div class="progress" id="progressContainer" style="display:none">
+        <div class="progress-fill" id="progressBar"></div>
+      </div>
+      <div class="status-text" id="statusText" style="display:none"></div>
+
+      <div class="actions">
+        <button class="btn-secondary" id="clearBtn" disabled>Limpiar</button>
+        <button class="btn-primary" id="startBtn" disabled>Procesar PDFs</button>
+      </div>
+
+      <div class="config">
+        <details>
+          <summary>⚙ Configuración avanzada</summary>
+          <div class="config-grid">
+            <div>
+              <label>Webhook URL</label>
+              <input id="webhookUrl" type="text" value="https://abraham03-n8n.hf.space/webhook/estados-de-cuenta">
+            </div>
+            <div>
+              <label>Delay entre PDFs (s) — para no saturar Gemini</label>
+              <input id="delaySeconds" type="number" min="0" max="60" value="6">
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div class="summary" id="summary">
+      <div class="title" id="summaryTitle"></div>
+      <div class="detail" id="summaryDetail"></div>
+      <a class="download-link" id="downloadLink" href="#" download>📥 Descargar Expediente Excel</a>
+    </div>
+  </div>
+
+<script>
+const MAX_FILES = 10;
+const $ = (id) => document.getElementById(id);
+let queue = [];
+let processing = false;
+let lastBlob = null;
+let lastFilename = null;
+
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function statusIcon(s) {
+  return { pending: '⏸', uploading: '⏳', success: '✅', error: '❌' }[s] || '•';
+}
+
+function addFiles(files) {
+  const pdfs = Array.from(files).filter(f =>
+    f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+  );
+  if (pdfs.length === 0) return;
+  const espacio = MAX_FILES - queue.length;
+  if (espacio <= 0) return;
+  const aAgregar = pdfs.slice(0, espacio);
+  for (const f of aAgregar) {
+    if (queue.some(q => q.file.name === f.name && q.file.size === f.size)) continue;
+    queue.push({ file: f, status: 'pending', id: Math.random().toString(36).slice(2) });
+  }
+  render();
+}
+
+function removeFromQueue(id) {
+  if (processing) return;
+  queue = queue.filter(q => q.id !== id);
+  render();
+}
+
+function render() {
+  const queueEl = $('queue');
+  queueEl.innerHTML = '';
+  for (const item of queue) {
+    const row = document.createElement('div');
+    row.className = 'queue-item ' + item.status;
+    row.innerHTML = `
+      <div class="qi-icon">${statusIcon(item.status)}</div>
+      <div class="qi-name" title="${escapeHtml(item.file.name)}">${escapeHtml(item.file.name)}</div>
+      <div class="qi-size">${formatBytes(item.file.size)}</div>
+      ${item.status === 'pending' && !processing
+        ? `<button class="qi-remove" data-id="${item.id}" title="Quitar">×</button>`
+        : `<div class="qi-size">${item.status}</div>`}
+    `;
+    queueEl.appendChild(row);
+  }
+  queueEl.querySelectorAll('.qi-remove').forEach(btn => {
+    btn.addEventListener('click', e => { e.preventDefault(); removeFromQueue(btn.dataset.id); });
+  });
+  const tienenArchivos = queue.filter(q => q.status === 'pending').length > 0;
+  $('startBtn').disabled = processing || !tienenArchivos;
+  $('clearBtn').disabled = processing || queue.length === 0;
+
+  // Dropzone state
+  const dz = $('dropzone');
+  if (queue.length >= MAX_FILES) {
+    $('dzHint').textContent = 'Lista llena (10 archivos)';
+  } else {
+    $('dzHint').textContent = `Solo .pdf • Quedan ${MAX_FILES - queue.length} espacios`;
+  }
+}
+
+async function uploadOne(item, webhookUrl, timeoutMs) {
+  const form = new FormData();
+  form.append('data', item.file, item.file.name);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(webhookUrl, { method: 'POST', body: form, signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) {
+      const txt = await res.text();
+      return { ok: false, error: `HTTP ${res.status}: ${txt.substring(0, 400)}` };
+    }
+    // Esperamos XLSX binario
+    const contentType = res.headers.get('Content-Type') || '';
+    if (contentType.includes('spreadsheetml') || contentType.includes('octet-stream')) {
+      const blob = await res.blob();
+      let filename = 'EXPEDIENTE.xlsx';
+      const cd = res.headers.get('Content-Disposition');
+      if (cd) {
+        const m = cd.match(/filename="?([^"]+)"?/i);
+        if (m) filename = m[1];
+      }
+      return { ok: true, blob, filename };
+    } else {
+      // Si llegó JSON en lugar de XLSX (puede pasar si el workflow respondio antes de generar)
+      const txt = await res.text();
+      return { ok: false, error: `Respuesta no es XLSX: ${txt.substring(0, 200)}` };
+    }
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === 'AbortError') return { ok: false, error: `TIMEOUT despues de ${timeoutMs/1000}s` };
+    return { ok: false, error: 'ERROR: ' + e.message };
+  }
+}
+
+async function start() {
+  if (processing) return;
+  const webhookUrl = $('webhookUrl').value.trim();
+  const delayMs = parseInt($('delaySeconds').value, 10) * 1000;
+  if (!webhookUrl) { alert('Falta la URL del webhook'); return; }
+
+  processing = true;
+  lastBlob = null;
+  lastFilename = null;
+  const pendientes = queue.filter(q => q.status === 'pending');
+  $('progressContainer').style.display = 'block';
+  $('progressBar').style.width = '0%';
+  $('statusText').style.display = 'block';
+  $('summary').classList.remove('show');
+  render();
+
+  let ok = 0, err = 0;
+  let lastError = '';
+  // Timeout adaptativo: PDFs grandes pueden tardar mas
+  const timeoutMs = 900000;
+
+  for (let i = 0; i < pendientes.length; i++) {
+    const item = pendientes[i];
+    item.status = 'uploading';
+    $('statusText').textContent = `Procesando ${i+1} de ${pendientes.length}: ${item.file.name}…`;
+    render();
+    const r = await uploadOne(item, webhookUrl, timeoutMs);
+    if (r.ok) {
+      item.status = 'success';
+      ok++;
+      // Solo guardamos el ULTIMO XLSX (es el acumulado completo)
+      lastBlob = r.blob;
+      lastFilename = r.filename;
+    } else {
+      item.status = 'error';
+      err++;
+      lastError = r.error;
+    }
+    render();
+    $('progressBar').style.width = ((i + 1) / pendientes.length * 100) + '%';
+    if (i < pendientes.length - 1 && delayMs > 0) {
+      $('statusText').textContent = `Esperando ${delayMs/1000}s antes del siguiente…`;
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+
+  processing = false;
+  $('statusText').style.display = 'none';
+
+  // Mostrar resumen y trigger descarga automatica
+  const summary = $('summary');
+  summary.classList.add('show');
+  if (err > 0) summary.classList.add('has-errors');
+  else summary.classList.remove('has-errors');
+
+  if (ok > 0 && lastBlob) {
+    $('summaryTitle').textContent = `✅ ${ok} ${ok === 1 ? 'PDF procesado' : 'PDFs procesados'}${err > 0 ? ` (${err} con error)` : ''}`;
+    $('summaryDetail').textContent = `Tu expediente Excel se descargará automáticamente. Si no inicia, haz clic en el botón.`;
+    const url = URL.createObjectURL(lastBlob);
+    $('downloadLink').href = url;
+    $('downloadLink').download = lastFilename || 'EXPEDIENTE.xlsx';
+    // Trigger descarga automatica
+    $('downloadLink').click();
+  } else {
+    $('summaryTitle').textContent = '❌ Falló el procesamiento';
+    $('summaryDetail').textContent = lastError || 'No se generó el expediente. Revisa los archivos y vuelve a intentar.';
+    $('downloadLink').style.display = 'none';
+  }
+  render();
+}
+
+function clearAll() {
+  queue = [];
+  lastBlob = null;
+  lastFilename = null;
+  $('progressContainer').style.display = 'none';
+  $('progressBar').style.width = '0%';
+  $('statusText').style.display = 'none';
+  $('summary').classList.remove('show');
+  render();
+}
+
+// Events
+const dz = $('dropzone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragging'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('dragging'));
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  dz.classList.remove('dragging');
+  if (e.dataTransfer.files) addFiles(e.dataTransfer.files);
+});
+$('fileInput').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+$('startBtn').addEventListener('click', start);
+$('clearBtn').addEventListener('click', clearAll);
+
+// Persistir config
+['webhookUrl', 'delaySeconds'].forEach(id => {
+  const el = $(id);
+  const saved = localStorage.getItem('ec4_' + id);
+  if (saved) el.value = saved;
+  el.addEventListener('change', () => localStorage.setItem('ec4_' + id, el.value));
+});
+
+render();
+</script>
+</body>
+</html>
