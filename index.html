@@ -482,6 +482,10 @@
               <input id="webhookUrl" type="text" value="https://abraham03-n8n.hf.space/webhook/estados-de-cuenta">
             </div>
             <div>
+              <label>URL de estado (vacio = se deduce del webhook)</label>
+              <input id="statusUrl" type="text" value="" placeholder="https://abraham03-n8n.hf.space/webhook/estado-expediente">
+            </div>
+            <div>
               <label>Delay entre PDFs (s) — para no saturar Gemini</label>
               <input id="delaySeconds" type="number" min="0" max="60" value="6">
             </div>
@@ -580,40 +584,115 @@ function render() {
   }
 }
 
-async function uploadOne(item, webhookUrl, timeoutMs) {
+// Modo asincrono: el servidor responde al instante y procesa en segundo plano, y
+// la pagina pregunta hasta que el expediente esta listo. Un escaneo de 120+
+// paginas tarda mas de lo que aguanta una conexion abierta esperando.
+const POLL_MS = 10000;                     // cada cuanto se pregunta
+const MAX_ESPERA_MS = 2 * 60 * 60 * 1000;  // cuanto se espera como maximo
+
+// Identificador del trabajo, aleatorio: el servidor NO expone su numero de
+// ejecucion (es consecutivo y dejaria descargar expedientes ajenos).
+function nuevoToken() {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+}
+
+function urlEstado(webhookUrl) {
+  const manual = ($('statusUrl') && $('statusUrl').value.trim()) || '';
+  return manual || webhookUrl.replace(/\/[^\/?#]+\/?$/, '/estado-expediente');
+}
+
+function esExcel(res) {
+  const ct = res.headers.get('Content-Type') || '';
+  return ct.includes('spreadsheetml') || ct.includes('octet-stream');
+}
+
+function nombreDe(res) {
+  const cd = res.headers.get('Content-Disposition');
+  const m = cd && cd.match(/filename="?([^"]+)"?/i);
+  return m ? m[1] : 'EXPEDIENTE.xlsx';
+}
+
+const esperar = (ms) => new Promise(r => setTimeout(r, ms));
+
+function transcurrido(ms) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+}
+
+async function uploadOne(item, webhookUrl, timeoutMs, avisar) {
+  avisar = avisar || (() => {});
+  const job = nuevoToken();
   const form = new FormData();
   form.append('data', item.file, item.file.name);
   form.append('tipo_plantilla', $('microCheck').checked ? 'microempresa' : 'normal');
+  form.append('modo', 'async');
+  form.append('job', job);
+
+  // 1) subir el PDF
+  let res;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(webhookUrl, { method: 'POST', body: form, signal: controller.signal });
-    clearTimeout(timer);
-    if (!res.ok) {
-      const txt = await res.text();
-      return { ok: false, error: `HTTP ${res.status}: ${txt.substring(0, 400)}` };
-    }
-    // Esperamos XLSX binario
-    const contentType = res.headers.get('Content-Type') || '';
-    if (contentType.includes('spreadsheetml') || contentType.includes('octet-stream')) {
-      const blob = await res.blob();
-      let filename = 'EXPEDIENTE.xlsx';
-      const cd = res.headers.get('Content-Disposition');
-      if (cd) {
-        const m = cd.match(/filename="?([^"]+)"?/i);
-        if (m) filename = m[1];
-      }
-      return { ok: true, blob, filename };
-    } else {
-      // Si llegó JSON en lugar de XLSX (puede pasar si el workflow respondio antes de generar)
-      const txt = await res.text();
-      return { ok: false, error: `Respuesta no es XLSX: ${txt.substring(0, 200)}` };
-    }
+    avisar('subiendo el PDF…');
+    res = await fetch(webhookUrl, { method: 'POST', body: form, signal: controller.signal });
   } catch (e) {
     clearTimeout(timer);
-    if (e.name === 'AbortError') return { ok: false, error: `TIMEOUT despues de ${timeoutMs/1000}s` };
-    return { ok: false, error: 'ERROR: ' + e.message };
+    if (e.name === 'AbortError') return { ok: false, error: `La subida no termino en ${timeoutMs/1000}s` };
+    return { ok: false, error: 'ERROR al subir: ' + e.message };
   }
+  clearTimeout(timer);
+  if (!res.ok) {
+    const txt = await res.text();
+    return { ok: false, error: `HTTP ${res.status}: ${txt.substring(0, 400)}` };
+  }
+  // Un servidor que todavia no tiene el modo asincrono responde con el Excel.
+  if (esExcel(res)) return { ok: true, blob: await res.blob(), filename: nombreDe(res) };
+  let recibido = {};
+  try { recibido = await res.json(); } catch (e) { recibido = {}; }
+  if (recibido.estado !== 'procesando') {
+    return { ok: false, error: 'Respuesta inesperada del servidor: ' + JSON.stringify(recibido).substring(0, 200) };
+  }
+
+  // 2) preguntar hasta que este listo
+  const url = urlEstado(webhookUrl) + '?job=' + encodeURIComponent(job);
+  const inicio = Date.now();
+  let fallos = 0, sinRegistro = 0;
+  while (Date.now() - inicio < MAX_ESPERA_MS) {
+    await esperar(POLL_MS);
+    avisar(`procesando en el servidor (${transcurrido(Date.now() - inicio)})…`);
+    let r;
+    try {
+      r = await fetch(url, { cache: 'no-store' });
+    } catch (e) {
+      // un corte de red momentaneo no mata el trabajo: se sigue preguntando
+      if (++fallos >= 30) return { ok: false, error: 'Se perdio la conexion con el servidor: ' + e.message };
+      continue;
+    }
+    if (r.status === 404) {
+      if (++fallos >= 6) return { ok: false, error: 'El servidor no tiene activo el flujo "EC Trabajos" (estado-expediente). Importalo y activalo en n8n.' };
+      continue;
+    }
+    if (!r.ok) {
+      if (++fallos >= 30) return { ok: false, error: `HTTP ${r.status} al consultar el estado del trabajo` };
+      continue;
+    }
+    fallos = 0;
+    if (esExcel(r)) return { ok: true, blob: await r.blob(), filename: nombreDe(r) };
+    let e = {};
+    try { e = await r.json(); } catch (err) { continue; }
+    if (e.estado === 'procesando') continue;
+    if (e.estado === 'error') return { ok: false, error: e.mensaje || 'El procesamiento fallo.' };
+    if (e.estado === 'expirado') return { ok: false, error: e.mensaje };
+    if (e.estado === 'desconocido') {
+      // el registro se escribe ANTES de responder: si no aparece, el servidor lo perdio
+      if (++sinRegistro >= 3) return { ok: false, error: 'El servidor ya no reconoce este trabajo (probablemente se reinicio). Vuelve a subir el PDF.' };
+      continue;
+    }
+    return { ok: false, error: 'Estado inesperado: ' + JSON.stringify(e).substring(0, 200) };
+  }
+  return { ok: false, error: `Sigue procesando despues de ${MAX_ESPERA_MS/60000} min. Cuando termine, el expediente quedara en la carpeta del cliente en Drive.` };
 }
 
 async function start() {
@@ -634,7 +713,8 @@ async function start() {
 
   let ok = 0, err = 0;
   let lastError = '';
-  // Timeout adaptativo: PDFs grandes pueden tardar mas
+  // Limite para la SUBIDA del PDF (hasta ~85 MB). El procesamiento ya no tiene
+  // este limite: se espera preguntando, hasta MAX_ESPERA_MS.
   const timeoutMs = 900000;
 
   for (let i = 0; i < pendientes.length; i++) {
@@ -642,7 +722,9 @@ async function start() {
     item.status = 'uploading';
     $('statusText').textContent = `Procesando ${i+1} de ${pendientes.length}: ${item.file.name}…`;
     render();
-    const r = await uploadOne(item, webhookUrl, timeoutMs);
+    const r = await uploadOne(item, webhookUrl, timeoutMs, (msg) => {
+      $('statusText').textContent = `Procesando ${i+1} de ${pendientes.length}: ${item.file.name} — ${msg}`;
+    });
     if (r.ok) {
       item.status = 'success';
       ok++;
@@ -713,7 +795,7 @@ $('startBtn').addEventListener('click', start);
 $('clearBtn').addEventListener('click', clearAll);
 
 // Persistir config
-['webhookUrl', 'delaySeconds'].forEach(id => {
+['webhookUrl', 'delaySeconds', 'statusUrl'].forEach(id => {
   const el = $(id);
   const saved = localStorage.getItem('ec4_' + id);
   if (saved) el.value = saved;
